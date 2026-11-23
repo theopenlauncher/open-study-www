@@ -134,7 +134,7 @@ export function cardsVignette(el) {
 
 export function focusVignette(el) {
   const FOCUS = 25 * 60;
-  const SPEED = 60; // one real second shows one minute passing
+  const SPEED = 150; // a 25-minute session plays out in 10 seconds
   const week = [40, 95, 60, 120, 30, 75, 50];
   const days = Array.from({ length: 7 }, (_, n) => {
     const d = new Date(); d.setDate(d.getDate() - 6 + n);
@@ -143,63 +143,112 @@ export function focusVignette(el) {
   const goal = 120;
   let remaining = FOCUS;
   let running = false;
-  let handle = null;
+  let frame = 0;
+  let startedAt = 0;
+  let startRemaining = FOCUS;
   let sessions = 0;
+  let shownToday = week[6];
 
   const R = 80;
   const C = 2 * Math.PI * R;
 
   function paint() {
-    const today = week[6];
     const max = Math.max(...week, goal);
     el.innerHTML = `<div class="fx"><div class="fx-panel fx-focus">
       <div class="fx-ring">
         <svg viewBox="0 0 168 168" aria-hidden="true"><circle class="track" cx="84" cy="84" r="${R}"/>
           <circle class="prog" cx="84" cy="84" r="${R}" stroke-dasharray="${C}" stroke-dashoffset="${C * (remaining / FOCUS)}"/></svg>
-        <div class="fx-ring-text"><span class="fx-label">Focus</span><b data-time>${mmss(remaining)}</b></div>
+        <div class="fx-ring-text"><span class="fx-label">Focus</span><b data-time>${mmss(Math.ceil(remaining))}</b></div>
       </div>
       <div class="fx-focus-controls">
         <button class="btn btn-primary btn-sm" data-act="toggle">${icon(running ? 'pause' : 'play')}${running ? 'Pause' : remaining < FOCUS ? 'Resume' : 'Start focus'}</button>
         <button class="btn btn-ghost btn-sm" data-act="reset" ${remaining === FOCUS ? 'disabled' : ''} aria-label="Reset timer">${icon('reset')}</button>
       </div>
       <div class="fx-goal">
-        <div class="fx-goal-row"><span class="fx-label">Today</span><span><b>${today}</b> of ${goal} min</span></div>
-        <div class="fx-bar"><i style="width:${Math.min(100, (today / goal) * 100)}%"></i></div>
+        <div class="fx-goal-row"><span class="fx-label">Today</span><span><b data-today>${Math.round(shownToday)}</b> of ${goal} min</span></div>
+        <div class="fx-bar"><i style="width:${Math.min(100, (week[6] / goal) * 100)}%"></i></div>
         <div class="fx-week" aria-label="Focus minutes this week">
           ${week.map((m, n) => `<div class="${n === 6 ? 'is-today' : ''}"><i style="height:${(m / max) * 100}%" title="${m} min"></i><small>${days[n]}</small></div>`).join('')}
         </div>
       </div>
     </div>
-    <p class="fx-hint" aria-live="polite">${sessions ? `Session logged: +25 minutes today.` : 'This preview runs 60× faster than the real timer.'}</p></div>`;
+    <p class="fx-hint" aria-live="polite">${sessions ? 'Session logged: +25 minutes today.' : 'This preview runs 150× faster than the real timer.'}</p></div>`;
   }
 
-  function tick() {
-    remaining = Math.max(0, remaining - SPEED / 4);
-    if (remaining === 0) {
-      clearInterval(handle); running = false; sessions += 1;
-      week[6] += 25; remaining = FOCUS;
-      paint();
-      el.querySelector('[data-act="toggle"]')?.focus({ preventScroll: true });
-      return;
-    }
-    const t = el.querySelector('[data-time]');
+  // One animation frame per display refresh, so the ring sweeps continuously.
+  function step(ts) {
+    if (!running) return;
+    // Derived from the clock, so it stays accurate however often frames arrive.
+    remaining = Math.max(0, startRemaining - ((ts - startedAt) / 1000) * SPEED);
+    if (remaining === 0) return complete();
     const p = el.querySelector('.prog');
-    if (t) t.textContent = mmss(remaining);
+    const t = el.querySelector('[data-time]');
     if (p) p.setAttribute('stroke-dashoffset', String(C * (remaining / FOCUS)));
+    const text = mmss(Math.ceil(remaining));
+    if (t && t.textContent !== text) t.textContent = text;
+    frame = requestAnimationFrame(step);
+  }
+
+  function start() {
+    running = true;
+    startedAt = performance.now();
+    startRemaining = remaining;
+    frame = requestAnimationFrame(step);
+  }
+
+  function stop() {
+    if (running) remaining = Math.max(0, startRemaining - ((performance.now() - startedAt) / 1000) * SPEED);
+    running = false;
+    cancelAnimationFrame(frame);
+  }
+
+  function complete() {
+    running = false;
+    cancelAnimationFrame(frame);
+    sessions += 1;
+    const from = week[6];
+    week[6] += 25;
+    remaining = FOCUS;
+    paint();
+    // Start the bars at their old size, then let the CSS transitions grow them.
+    const bar = el.querySelector('.fx-bar i');
+    const col = el.querySelector('.fx-week .is-today i');
+    const prevMax = Math.max(...week.slice(0, 6), from, goal);
+    if (bar && col && !prefersReducedMotion()) {
+      const toBar = bar.style.width; const toCol = col.style.height;
+      bar.style.width = `${Math.min(100, (from / goal) * 100)}%`;
+      col.style.height = `${(from / prevMax) * 100}%`;
+      void bar.offsetWidth;
+      bar.style.width = toBar; col.style.height = toCol;
+    }
+    el.querySelector('[data-act="toggle"]')?.focus({ preventScroll: true });
+    countUp(from, week[6]);
+  }
+
+  // Count today's minutes up alongside the bar's width transition.
+  function countUp(from, to) {
+    if (prefersReducedMotion()) { shownToday = to; return; }
+    const t0 = performance.now();
+    const tick = (now) => {
+      const k = Math.min(1, (now - t0) / 500);
+      shownToday = from + (to - from) * (1 - (1 - k) ** 3);
+      const b = el.querySelector('[data-today]');
+      if (b) b.textContent = String(Math.round(shownToday));
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }
 
   el.addEventListener('click', (e) => {
     const b = e.target.closest('[data-act]');
     if (!b) return;
     if (b.dataset.act === 'toggle') {
-      running = !running;
-      clearInterval(handle);
-      if (running) handle = setInterval(tick, 250);
+      if (running) stop(); else start();
     } else {
-      running = false; clearInterval(handle); remaining = FOCUS;
+      stop(); remaining = FOCUS;
     }
     paint();
-    el.querySelector(`[data-act="${b.dataset.act === 'reset' ? 'toggle' : b.dataset.act}"]`)?.focus({ preventScroll: true });
+    el.querySelector('[data-act="toggle"]')?.focus({ preventScroll: true });
   });
   paint();
 }
